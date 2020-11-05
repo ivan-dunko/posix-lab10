@@ -1,37 +1,28 @@
-/* 
- * File:   din_phil.c
- * Author: nd159473 (Nickolay Dalmatov, Sun Microsystems)
- * adapted from http://developers.sun.com/sunstudio/downloads/ssx/tha/tha_using_deadlock.html
- *
- * Created on January 1, 1970, 9:53 AM
- */
-
-#include <stdio.h>
-#include <stdlib.h>
 #include <pthread.h>
-#include <unistd.h>
+#include <string.h>
 #include <errno.h>
-
-#define PHILO 5
-#define DELAY 30000
-#define FOOD 50
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
 
 #define ERROR_CODE -1
 #define SUCCESS_CODE 0
+#define PRINT_CNT 10
+#define THREAD_MSG "routine\n"
+#define MAIN_MSG "main\n"
 
-pthread_mutex_t forks[PHILO];
-pthread_t phils[PHILO];
-pthread_mutex_t foodlock;
+#define lock pthread_mutex_lock
+#define unlock pthread_mutex_unlock
 
-int sleep_seconds = 0;
+pthread_mutex_t ma, mb, mc;
 
-void exitWithFailure(const char *msg, int errcode){
-    errno = errcode;
-    fprintf(stderr, "%.256s:%.256s\n", msg, strerror(errno));
+void exitWithFailure(const char *msg, int err){
+    errno = err;
+    fprintf(stderr, "%s256 : %s256", msg, strerror(errno));
     exit(EXIT_FAILURE);
 }
 
-void assertSuccess(char *msg, int errcode){
+void assertSuccess(const char *msg, int errcode){
     if (errcode != SUCCESS_CODE)
         exitWithFailure(msg, errcode);
 }
@@ -41,125 +32,113 @@ void assertInThreadSuccess(int errcode){
         pthread_exit((void*)errcode);
 }
 
-int food_on_table(int *res){
-    static int food = FOOD;
-    int myfood;
+int printLine(size_t print_cnt, const char *str){
+    for (size_t i = 0; i < print_cnt; ++i){
+        int len = strlen(str);
+        if (len == ERROR_CODE)
+            return ERROR_CODE;
+    
+        int err = write(STDIN_FILENO, str, len);
+        if (err == ERROR_CODE)
+            return ERROR_CODE;
+    }
 
-    int err = pthread_mutex_lock (&foodlock);
-    if (err != SUCCESS_CODE)
-        return err;
-
-    if (food > 0)
-        food--;
-
-    myfood = food;
-    err = pthread_mutex_unlock (&foodlock);
-    if (err != SUCCESS_CODE)
-        return err;
-        
-    *res = myfood;
     return SUCCESS_CODE;
 }
 
-int get_fork(
-            int phil,
-            int fork,
-            char *hand){
-    int err = pthread_mutex_lock (&forks[fork]);
-    if (err != SUCCESS_CODE)
-        return err;
+void lockSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
+    if (mtx == NULL)
+        return;
 
-    printf ("Philosopher %d: got %s fork %d\n", phil, hand, fork);
+    int err = lock(mtx);
+    assertSuccess(msg, err);
+}
+
+void unlockSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
+    if (mtx == NULL)
+        return;
+
+    int err = unlock(mtx);
+    assertSuccess(msg, err);
+}
+
+void *routine(void *data){
+    lockSuccessAssertion(&mb, "routine");
+
+    sleep(1);
+    for (int i = 0; i < PRINT_CNT; ++i){
+        lockSuccessAssertion(&mc, "routine");
+        printf(THREAD_MSG);
+        unlockSuccessAssertion(&mb, "routine");
+        lockSuccessAssertion(&ma, "routine");
+        unlockSuccessAssertion(&mc, "routine");
+        lockSuccessAssertion(&mb, "routine");
+        unlockSuccessAssertion(&ma, "routine");
+    }
+
+    unlockSuccessAssertion(&mb, "routine");
+
     return SUCCESS_CODE;
 }
 
-void down_forks(
-            int f1,
-            int f2){
-    pthread_mutex_unlock (&forks[f1]);
-    pthread_mutex_unlock (&forks[f2]);
+void initMutexSuccessAssertion(
+    pthread_mutex_t *mtx, 
+    pthread_mutexattr_t *mtx_attr,
+    const char *msg){
+    if (mtx == NULL || mtx_attr)
+        return;
+
+    int err = pthread_mutex_init(&ma, NULL);
+    assertSuccess(msg, err);
 }
 
-void *philosopher (void *num){
-    int id;
-    int left_fork, right_fork, f;
-
-    id = (int)num;
-    printf ("Philosopher %d sitting down to dinner.\n", id);
-    right_fork = id;
-    left_fork = id + 1;
-
-    /* Wrap around the forks. */
-    if (left_fork == PHILO)
-        left_fork = 0;
-
-    int err = food_on_table(&f);
-    assertInThreadSuccess(err);
-    while (f != 0) {
-
-        /* Thanks to philosophers #1 who would like to 
-            * take a nap before picking up the forks, the other
-            * philosophers may be able to eat their dishes and 
-            * not deadlock.
-            */
-        if (id == 1)
-            sleep (sleep_seconds);
-
-        printf ("Philosopher %d: get dish %d.\n", id, f);
-        if (id % 2 == 0){
-            err = get_fork(id, right_fork, "right");
-            assertInThreadSuccess(err);
-            err = get_fork(id, left_fork, "left ");
-            assertInThreadSuccess(err);
-        }
-        else{
-            err = get_fork(id, left_fork, "left ");
-            assertInThreadSuccess(err);
-            err = get_fork(id, right_fork, "right");
-            assertInThreadSuccess(err);
-        }
-
-        printf ("Philosopher %d: eating.\n", id);
-        usleep (DELAY * (FOOD - f + 1));
-        down_forks(left_fork, right_fork);
-
-        err = food_on_table(&f);
-        assertInThreadSuccess(err);
-    }
-
-    printf ("Philosopher %d is done eating.\n", id);
-    return (NULL);
+void init(const char *err_msg){
+    initMutexSuccessAssertion(&ma, NULL, err_msg);
+    initMutexSuccessAssertion(&mb, NULL, err_msg);
+    initMutexSuccessAssertion(&mc, NULL, err_msg);
 }
 
-int main (int argn, char **argv){
-    int i;
+void destroyMutexSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
+    if (mtx == NULL)
+        return;
 
-    if (argn == 2)
-        sleep_seconds = atoi(argv[1]);
-    if (sleep_seconds < 0)
-        exitWithFailure("main", EINVAL);
+    int err = pthread_mutex_destroy(mtx);
+    assertSuccess(msg, err);
+}
 
-    int err = pthread_mutex_init(&foodlock, NULL);
-    assertSuccess("main: pthread_mutex_init", err);
+void releaseResources(const char *msg){
+    destroyMutexSuccessAssertion(&ma, msg);
+    destroyMutexSuccessAssertion(&mb, msg);
+    destroyMutexSuccessAssertion(&mc, msg);
+}
 
-    for (i = 0; i < PHILO; i++){
-        err = pthread_mutex_init(&forks[i], NULL);
-        assertSuccess("main: pthread_mutex_init", err);
+int main(int argc, char **argv){
+    pthread_t pid;
+
+    init("init");
+
+    lockSuccessAssertion(&mc, "main:init");
+
+    int err = pthread_create(&pid, NULL, routine, NULL);
+    sleep(1);
+    if (err != SUCCESS_CODE)
+        exitWithFailure("main", err);
+
+    for (int i = 0; i < PRINT_CNT; ++i){
+        lockSuccessAssertion(&ma, "main");
+        printf(MAIN_MSG);
+        unlockSuccessAssertion(&mc, "main");
+        lockSuccessAssertion(&mb, "main");
+        unlockSuccessAssertion(&ma, "main");
+        lockSuccessAssertion(&mc, "main");
+        unlockSuccessAssertion(&mb, "main");
     }
 
-    for (i = 0; i < PHILO; i++){
-        err = pthread_create(&phils[i], NULL, philosopher, (void *)i);
-        assertSuccess("main: pthread_create", err);
-    }
+    unlockSuccessAssertion(&mc, "main");
+    err = pthread_join(pid, NULL);
+    assertSuccess("main", err);
 
-    for (i = 0; i < PHILO; i++){
-        int ret_code = SUCCESS_CODE;
-        printf("lala\n");
-        err = pthread_join(phils[i], (void*)(&ret_code));
-        assertSuccess("main: pthread_join", err);
-        assertSuccess("philosopher", ret_code);
-    }
+    releaseResources("main:releaseResources");
 
-    printf("Philosophers are done.\n");
-    return 0;
+    pthread_exit((void*)(EXIT_SUCCESS));
 }
