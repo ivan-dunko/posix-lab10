@@ -14,8 +14,13 @@
 #define lock pthread_mutex_lock
 #define unlock pthread_mutex_unlock
 
+#define MTX_A 0
+#define MTX_B 1
+#define MTX_C 2
+#define MTX_CNT 3
+
 typedef struct Context{
-    pthread_mutex_t *mtx_a, *mtx_b, *mtx_c;
+    pthread_mutex_t **mtxs;
     int return_code;
 } Context;
 
@@ -39,20 +44,6 @@ void assertInThreadSuccess(int errcode, Context *cntx){
     }
 }
 
-int printLine(size_t print_cnt, const char *str){
-    for (size_t i = 0; i < print_cnt; ++i){
-        int len = strlen(str);
-        if (len == ERROR_CODE)
-            return ERROR_CODE;
-    
-        int err = write(STDIN_FILENO, str, len);
-        if (err == ERROR_CODE)
-            return ERROR_CODE;
-    }
-
-    return SUCCESS_CODE;
-}
-
 void lockSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
     if (mtx == NULL)
         return;
@@ -69,37 +60,11 @@ void unlockSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
     assertSuccess(msg, err);
 }
 
-void *routine(void *data){
-    if (data == NULL)
-        exitWithFailure("routine", EINVAL);
-    Context *cntx = (Context*)data;
-    if (cntx->mtx_a == NULL || cntx->mtx_b == NULL
-         || cntx->mtx_c == NULL)
-         exitWithFailure("routine", EINVAL);
-
-    lockSuccessAssertion(cntx->mtx_b, "routine");
-
-    sleep(1);
-    for (int i = 0; i < PRINT_CNT; ++i){
-        lockSuccessAssertion(cntx->mtx_c, "routine");
-        printf(THREAD_MSG);
-        unlockSuccessAssertion(cntx->mtx_b, "routine");
-        lockSuccessAssertion(cntx->mtx_a, "routine");
-        unlockSuccessAssertion(cntx->mtx_c, "routine");
-        lockSuccessAssertion(cntx->mtx_b, "routine");
-        unlockSuccessAssertion(cntx->mtx_a, "routine");
-    }
-
-    unlockSuccessAssertion(&mtx_b, "routine");
-
-    return SUCCESS_CODE;
-}
-
 void initMutexSuccessAssertion(
     pthread_mutex_t *mtx, 
     pthread_mutexattr_t *mtx_attr,
     const char *msg){
-    if (mtx == NULL || mtx_attr)
+    if (mtx == NULL)
         return;
 
     int err = pthread_mutex_init(&mtx_a, NULL);
@@ -107,9 +72,15 @@ void initMutexSuccessAssertion(
 }
 
 void init(const char *err_msg){
-    initMutexSuccessAssertion(&mtx_a, NULL, err_msg);
-    initMutexSuccessAssertion(&mtx_b, NULL, err_msg);
-    initMutexSuccessAssertion(&mtx_c, NULL, err_msg);
+    pthread_mutexattr_t mtx_attr;
+    int err = pthread_mutexattr_settype(&mtx_attr, PTHREAD_MUTEX_ERRORCHECK);
+    assertSuccess("init", err);
+    initMutexSuccessAssertion(&mtx_a, &mtx_attr, err_msg);
+    initMutexSuccessAssertion(&mtx_b, &mtx_attr, err_msg);
+    initMutexSuccessAssertion(&mtx_c, &mtx_attr, err_msg);
+
+    err = pthread_mutexattr_destroy(&mtx_attr);
+    assertSuccess("init", err);
 }
 
 int initContext(
@@ -122,9 +93,14 @@ int initContext(
         || mtx_b == NULL || mtx_c == NULL)
         return EINVAL;
 
-    cntx->mtx_a = mtx_a;
-    cntx->mtx_b = mtx_b;
-    cntx->mtx_c = mtx_c;
+    errno = SUCCESS_CODE;
+    cntx->mtxs = (pthread_mutex_t**)malloc(MTX_CNT * sizeof(pthread_mutex_t*));
+    if (cntx->mtxs == NULL || errno != SUCCESS_CODE)
+        exitWithFailure("initContext", ENOMEM);
+    cntx->mtxs[0] = mtx_a;
+    cntx->mtxs[1] = mtx_b;
+    cntx->mtxs[2] = mtx_c;
+
     cntx->return_code = SUCCESS_CODE;
 
     return SUCCESS_CODE;
@@ -138,10 +114,42 @@ void destroyMutexSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
     assertSuccess(msg, err);
 }
 
-void releaseResources(const char *msg){
+void releaseResources(Context *cntx, const char *msg){
+    free(cntx->mtxs);
     destroyMutexSuccessAssertion(&mtx_a, msg);
     destroyMutexSuccessAssertion(&mtx_b, msg);
     destroyMutexSuccessAssertion(&mtx_c, msg);
+}
+
+void iteration(Context *cntx, const char *print_msg, 
+                size_t start_mtx, const char *err_msg){
+    for (int i = 0; i < PRINT_CNT; ++i){
+        lockSuccessAssertion(cntx->mtxs[start_mtx], err_msg);
+        printf(print_msg);
+        unlockSuccessAssertion(cntx->mtxs[(start_mtx + 2) % MTX_CNT], err_msg);
+        lockSuccessAssertion(cntx->mtxs[(start_mtx + 1) % MTX_CNT], err_msg);
+        unlockSuccessAssertion(cntx->mtxs[start_mtx], err_msg);
+        lockSuccessAssertion(cntx->mtxs[(start_mtx + 2) % MTX_CNT], err_msg);
+        unlockSuccessAssertion(cntx->mtxs[(start_mtx + 1) % MTX_CNT], err_msg);
+    }
+}
+
+void *routine(void *data){
+    if (data == NULL)
+        exitWithFailure("routine", EINVAL);
+    Context *cntx = (Context*)data;
+    if (cntx->mtxs == NULL)
+         exitWithFailure("routine", EINVAL);
+
+    lockSuccessAssertion(cntx->mtxs[MTX_B], "routine");
+
+    sleep(1);
+    for (int i = 0; i < PRINT_CNT; ++i)
+        iteration(cntx, THREAD_MSG, MTX_C, "routine");
+
+    unlockSuccessAssertion(&mtx_b, "routine");
+
+    return SUCCESS_CODE;
 }
 
 int main(int argc, char **argv){
@@ -159,21 +167,14 @@ int main(int argc, char **argv){
     if (err != SUCCESS_CODE)
         exitWithFailure("main", err);
 
-    for (int i = 0; i < PRINT_CNT; ++i){
-        lockSuccessAssertion(&mtx_a, "main");
-        printf(MAIN_MSG);
-        unlockSuccessAssertion(&mtx_c, "main");
-        lockSuccessAssertion(&mtx_b, "main");
-        unlockSuccessAssertion(&mtx_a, "main");
-        lockSuccessAssertion(&mtx_c, "main");
-        unlockSuccessAssertion(&mtx_b, "main");
-    }
+    for (int i = 0; i < PRINT_CNT; ++i)
+        iteration(&cntx, MAIN_MSG, MTX_A, "main");
 
     unlockSuccessAssertion(&mtx_c, "main");
     err = pthread_join(pid, NULL);
     assertSuccess("main", err);
 
-    releaseResources("main:releaseResources");
+    releaseResources(&cntx, "main:releaseResources");
 
     pthread_exit((void*)(EXIT_SUCCESS));
 }
