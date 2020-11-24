@@ -62,6 +62,8 @@ void unlockSuccessAssertion(pthread_mutex_t *mtx, const char *msg){
 
 void initMutexSuccessAssertion(
     pthread_mutex_t *mtx, 
+    //!!! первое изменение
+    //раньше здесь был pthread_mutex_t
     pthread_mutexattr_t *mtx_attr,
     const char *msg){
     if (mtx == NULL)
@@ -73,6 +75,7 @@ void initMutexSuccessAssertion(
 
 void init(const char *err_msg){
     pthread_mutexattr_t mtx_attr;
+    //!!! второе изменение - здесь не было инициализации атрибута
     int err = pthread_mutexattr_init(&mtx_attr);
     assertSuccess("init", err);
     err = pthread_mutexattr_settype(&mtx_attr, PTHREAD_MUTEX_ERRORCHECK);
